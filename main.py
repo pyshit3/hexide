@@ -51,6 +51,9 @@ lib.getOffsetViewChunk.restype  = None
 lib.parseDosHeader.argtypes = [ctypes.POINTER(ctypes.c_ubyte), ctypes.c_long, ctypes.c_char_p]
 lib.parseDosHeader.restype  = None
 
+lib.parseDosStub.argtypes = [ctypes.POINTER(ctypes.c_ubyte), ctypes.c_long, ctypes.c_char_p]
+lib.parseDosStub.restype  = None
+
 lib.freeBuffer.argtypes = [ctypes.POINTER(ctypes.c_ubyte)]
 lib.freeBuffer.restype  = None
 
@@ -103,6 +106,13 @@ def c_get_offset_chunk(size, offset, chunk_size) -> str:
 def c_get_dos_header(buf, size) -> str:
     out_buf = ctypes.create_string_buffer(1024)
     lib.parseDosHeader(buf, size, out_buf)
+    return out_buf.value.decode()
+
+def c_get_dos_stub(buf, size) -> str:
+    # stub_size * 5 + 256 bytes (as per parseDosStub comment)
+    out_size = size * 5 + 256
+    out_buf  = ctypes.create_string_buffer(out_size)
+    lib.parseDosStub(buf, size, out_buf)
     return out_buf.value.decode()
 
 # ── Lazy loading ──────────────────────────────────────────────
@@ -160,6 +170,7 @@ def switch_tab(filepath: str):
     buf  = tabs[filepath]["buf"]
     size = tabs[filepath]["size"]
 
+    # Update tab bar highlight
     for path, tab in tabs.items():
         if "btn" in tab:
             is_active = (path == filepath)
@@ -169,19 +180,28 @@ def switch_tab(filepath: str):
             tab["indicator"].configure(
                 fg_color=TAB_ACT_LINE if is_active else BG_TAB)
 
+    # Clear all text widgets
     for t in [offset_text, hex_text, ascii_text]:
         t.configure(state="normal")
         t.delete("1.0", "end")
         t.configure(state="disabled")
 
+    # Reset offset and load first chunk
     tabs[filepath]["offset"] = 0
     load_chunk(filepath, 0)
 
-    pe_text.configure(state="normal")
-    pe_text.delete("1.0", "end")
-    pe_text.insert("1.0", c_get_dos_header(buf, size))
-    pe_text.configure(state="disabled")
+    # Update PE panel tabs
+    dos_header_text.configure(state="normal")
+    dos_header_text.delete("1.0", "end")
+    dos_header_text.insert("1.0", c_get_dos_header(buf, size))
+    dos_header_text.configure(state="disabled")
 
+    dos_stub_text.configure(state="normal")
+    dos_stub_text.delete("1.0", "end")
+    dos_stub_text.insert("1.0", c_get_dos_stub(buf, size))
+    dos_stub_text.configure(state="disabled")
+
+    # Update title and status bar
     app.title(f"Hex Viewer — {os.path.basename(filepath)}")
     status_left.configure(text=filepath)
     status_right.configure(text=f"{size:,} bytes")
@@ -206,7 +226,8 @@ def close_tab(filepath: str):
         app.title("Hex Viewer")
         status_left.configure(text="")
         status_right.configure(text="")
-        for t in [offset_text, hex_text, ascii_text, pe_text]:
+        for t in [offset_text, hex_text, ascii_text,
+                  dos_header_text, dos_stub_text]:
             t.configure(state="normal")
             t.delete("1.0", "end")
             t.configure(state="disabled")
@@ -295,6 +316,19 @@ def on_scrollbar(command, *args):
     offset_text.yview(command, *args)
     hex_text.yview(command, *args)
     ascii_text.yview(command, *args)
+
+# ── PE panel tab switching ────────────────────────────────────
+def show_dos_header():
+    dos_header_text.pack(fill="both", expand=True)
+    dos_stub_text.pack_forget()
+    dos_header_btn.configure(fg_color=BG_TAB_ACT, text_color=FG_PRIMARY)
+    dos_stub_btn.configure(fg_color="#2d2d2d", text_color=FG_SECONDARY)
+
+def show_dos_stub():
+    dos_stub_text.pack(fill="both", expand=True)
+    dos_header_text.pack_forget()
+    dos_stub_btn.configure(fg_color=BG_TAB_ACT, text_color=FG_PRIMARY)
+    dos_header_btn.configure(fg_color="#2d2d2d", text_color=FG_SECONDARY)
 
 # ── App setup ─────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
@@ -410,22 +444,39 @@ ascii_text.pack(side="right", fill="y", padx=(0, 0))
 for t in [offset_text, hex_text, ascii_text]:
     t.bind("<MouseWheel>", on_mousewheel)
 
-# ── PE panel ─────────────────────────────────────────────────
+# ── PE panel ──────────────────────────────────────────────────
 pe_panel = tk.Frame(vert_pane, bg="#252526")
 vert_pane.add(pe_panel, minsize=80)
 
+# PE panel header with tab buttons
 pe_header = tk.Frame(pe_panel, bg="#2d2d2d", height=28)
 pe_header.pack(fill="x")
 pe_header.pack_propagate(False)
 
-tk.Label(pe_header, text="PE STRUCTURE — DOS HEADER",
-         fg=FG_SECONDARY, bg="#2d2d2d",
+tk.Label(pe_header, text="PE STRUCTURE", fg=FG_SECONDARY, bg="#2d2d2d",
          font=("Segoe UI", 11, "bold")).pack(side="left", padx=12, pady=4)
 
-pe_text = Text(pe_panel, bg="#252526", fg=FG_PRIMARY, font=("Courier New", 12),
-               relief="flat", bd=0, wrap="none", state="disabled",
-               selectbackground=TREE_SELECT, padx=12, pady=4)
-pe_text.pack(fill="both", expand=True)
+dos_header_btn = ctk.CTkButton(pe_header, text="DOS Header",
+                                fg_color=BG_TAB_ACT, text_color=FG_PRIMARY,
+                                hover_color="#3c3c3c", height=22, corner_radius=4,
+                                font=("Segoe UI", 11), command=show_dos_header)
+dos_header_btn.pack(side="left", padx=4, pady=3)
+
+dos_stub_btn = ctk.CTkButton(pe_header, text="DOS Stub",
+                              fg_color="#2d2d2d", text_color=FG_SECONDARY,
+                              hover_color="#3c3c3c", height=22, corner_radius=4,
+                              font=("Segoe UI", 11), command=show_dos_stub)
+dos_stub_btn.pack(side="left", padx=4, pady=3)
+
+# PE panel content
+PE_TEXT_KWARGS = dict(bg="#252526", fg=FG_PRIMARY, font=("Courier New", 12),
+                      relief="flat", bd=0, wrap="none", state="disabled",
+                      selectbackground=TREE_SELECT, padx=12, pady=4)
+
+dos_header_text = Text(pe_panel, **PE_TEXT_KWARGS)
+dos_header_text.pack(fill="both", expand=True)
+
+dos_stub_text = Text(pe_panel, **PE_TEXT_KWARGS)
 
 # ── Free memory on window close ───────────────────────────────
 def on_close():
