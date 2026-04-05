@@ -343,6 +343,126 @@ void parseDosHeader(const unsigned char* buf, long size, char* out_buf) {
     out_buf[pos] = '\0';
 }
 
+
+/*
+ * Parses and dumps the DOS Stub Program from a PE file.
+ *
+ * The DOS Stub is a small x86 real-mode program located between the
+ * DOS header and the PE header. When the PE file is executed in a DOS
+ * environment, this stub runs and prints:
+ *   "This program cannot be run in DOS mode."
+ *
+ * Memory layout:
+ *   [0x00 ~ 0x3F]              IMAGE_DOS_HEADER  (64 bytes)
+ *   [0x40 ~ e_lfanew - 1]      DOS Stub          (this function parses here)
+ *   [e_lfanew ~ ...]           PE Header
+ *
+ * Output format:
+ *   DOS Stub
+ *   -----------------------------------------
+ *   Start  : 0x00000040
+ *   End    : 0x000000E8
+ *   Size   : 0x000000A8
+ *   -----------------------------------------
+ *   00000040  0E 1F BA 0E 00 B4 09 CD  ........
+ *   ...
+ *
+ * Parameters:
+ *   buf     - full file buffer loaded by loadFile()
+ *   size    - total file size in bytes
+ *   out_buf - output buffer to write the formatted result into
+ *             must be at least (stub_size * 5 + 256) bytes
+ */
+void parseDosStub(const unsigned char* buf, long size, char* out_buf) {
+    IMAGE_DOS_HEADER* dosHeader = (IMAGE_DOS_HEADER*)buf;
+    long pos = 0;
+
+    if (size < sizeof(IMAGE_DOS_HEADER)) {
+        write_str(out_buf, &pos, "File is too small\n", 18);
+        out_buf[pos] = '\0';
+        return;
+    }
+
+    if (dosHeader->e_magic != 0x5A4D) {
+        write_str(out_buf, &pos, "Not a valid PE file\n", 20);
+        out_buf[pos] = '\0';
+        return;
+    }
+
+    // DOS Stub starts right after DOS header (0x40)
+    // and ends just before PE header (e_lfanew)
+    long stub_start = sizeof(IMAGE_DOS_HEADER); // 0x40
+    long stub_end = (long)dosHeader->e_lfanew; // e_lfanew
+    long stub_size = stub_end - stub_start;
+
+    if (stub_size <= 0) {
+        write_str(out_buf, &pos, "No DOS Stub found\n", 18);
+        out_buf[pos] = '\0';
+        return;
+    }
+
+    // Print stub info
+    write_str(out_buf, &pos, "DOS Stub\n", 9);
+    write_str(out_buf, &pos, "-----------------------------------------\n", 42);
+    write_str(out_buf, &pos, "Start  : ", 9); write_dword(out_buf, &pos, stub_start); out_buf[pos++] = '\n';
+    write_str(out_buf, &pos, "End    : ", 9); write_dword(out_buf, &pos, stub_end);   out_buf[pos++] = '\n';
+    write_str(out_buf, &pos, "Size   : ", 9); write_dword(out_buf, &pos, stub_size);  out_buf[pos++] = '\n';
+    write_str(out_buf, &pos, "-----------------------------------------\n", 42);
+
+    const unsigned char* stub = buf + stub_start;
+    for (long i = 0; i < stub_size; i++){
+        // Offset
+        if (i % 16 ==0){
+            unsigned long addr = stub_start + i;
+            out_buf[pos++] = HEX_TABLE[(addr >> 28) & 0x0F];
+            out_buf[pos++] = HEX_TABLE[(addr >> 24) & 0x0F];
+            out_buf[pos++] = HEX_TABLE[(addr >> 20) & 0x0F];
+            out_buf[pos++] = HEX_TABLE[(addr >> 16) & 0x0F];
+            out_buf[pos++] = HEX_TABLE[(addr >> 12) & 0x0F];
+            out_buf[pos++] = HEX_TABLE[(addr >>  8) & 0x0F];
+            out_buf[pos++] = HEX_TABLE[(addr >>  4) & 0x0F];
+            out_buf[pos++] = HEX_TABLE[(addr >>  0) & 0x0F];
+            out_buf[pos++] = ' ';
+            out_buf[pos++] = ' ';
+        }
+
+        // Hex
+        out_buf[pos++] = HEX_TABLE[stub[i] >> 4];
+        out_buf[pos++] = HEX_TABLE[stub[i] & 0x0F];
+        out_buf[pos++] = ' ';
+
+        // ASCII at end of each row
+        if (i % 16 == 15) {
+            out_buf[pos++] = ' ';
+            out_buf[pos++] = ' ';
+            for (long j = i - 15; j <= i; j++) {
+                out_buf[pos++] = ASCII_CODE_TABLE[stub[j]];
+            }
+            out_buf[pos++] = '\n';
+        }
+    }
+
+    // Handle last incomplete row
+    long remaining = stub_size % 16;
+    if (remaining != 0) {
+        // Pad hex columns
+        for (long i = 0; i < (16 - remaining); i++) {
+            out_buf[pos++] = ' ';
+            out_buf[pos++] = ' ';
+            out_buf[pos++] = ' ';
+        }
+        // ASCII
+        out_buf[pos++] = ' ';
+        out_buf[pos++] = ' ';
+        for (long i = stub_size - remaining; i < stub_size; i++) {
+            out_buf[pos++] = ASCII_CODE_TABLE[stub[i]];
+        }
+        out_buf[pos++] = '\n';
+    }
+
+    out_buf[pos] = '\0';
+}
+
 /*
  * Frees the buffer allocated by loadFile.
  * Must be called when the buffer is no longer needed to prevent memory leaks.
